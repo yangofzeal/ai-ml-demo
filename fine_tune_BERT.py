@@ -1,90 +1,83 @@
 #!/usr/bin/env python3.10
-"""
+"""Fine Tune Bert for assigning numerical values of sentiment to a movie
+review:
 
-Sample output:
+Sample Output
 
-Review               | Sentiment Score (-1 to 1)
---------------------------------------------------
-Sucked               | -0.5344
-Classic              | 0.3587
-So good              | 0.6949
-Didn't suck          | 0.5581
-A total disaster     | -0.7090
-
+Review               | Derived Sentiment Score (-1 to 1)
+------------------------------------------------------------
+A total disaster     | -1.0000
+Sucked               | -0.9795
+It was okay          | -0.6076
+So good              | -0.5724
+Classic              | -0.8472
+Didn't suck          | -0.8732
 
 """
 import torch
-import torch.nn as nn
 from transformers import BertTokenizer, BertModel
-import torch.optim as optim
+import torch.nn.functional as F
 
-class MovieReviewScorer(nn.Module):
-    def __init__(self):
-        super(MovieReviewScorer, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+def get_bert_cls_embedding(text, model, tokenizer):
+    """
+    Extracts the RAW [CLS] token from the last hidden state.
+    We avoid outputs.pooler_output because it is randomly initialized
+    in the base bert-base-uncased model.
+    """
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    # last_hidden_state shape: [batch, sequence_length, 768]
+    # We take the first token (index 0) which is the [CLS] token
+    return outputs.last_hidden_state[:, 0, :]
 
-        # Freeze BERT parameters
-        for param in self.bert.parameters():
-            param.requires_grad = False
-
-        self.regressor = nn.Sequential(
-            nn.Linear(768, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-            nn.Tanh()
-        )
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        # Use pooler_output (the processed [CLS] token)
-        pooled_output = outputs.pooler_output
-        return self.regressor(pooled_output)
-
-def run_example():
+def run_zero_shot_derivation():
+    # Load model and tokenizer
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    model = MovieReviewScorer()
+    model = BertModel.from_pretrained('bert-base-uncased')
+    model.eval()
 
-    # Define training data with clear distinctions
-    train_data = [
-        ("A total disaster", -0.9),
-        ("Sucked", -0.8),
-        ("It was okay", 0.0),
-        ("So good", 0.8),
-        ("Classic", 0.9),
-        ("Didn't suck", 0.4)
+    # --- DERIVING THE SENTIMENT AXIS ---
+    # We define the direction of sentiment using pure polarity seeds.
+    # No labels for your movie reviews are used.
+    pos_anchor = get_bert_cls_embedding("excellent great wonderful amazing", model, tokenizer)
+    neg_anchor = get_bert_cls_embedding("terrible awful horrible bad", model, tokenizer)
+
+    # The Sentiment Axis is the vector pointing from Negative to Positive
+    sentiment_axis = pos_anchor - neg_anchor
+    sentiment_axis = sentiment_axis / torch.norm(sentiment_axis) # Normalize to unit vector
+    # -----------------------------------
+
+    reviews = [
+        "A total disaster",
+        "Sucked",
+        "It was okay",
+        "So good",
+        "Classic",
+        "Didn't suck"
     ]
 
-    # Lower learning rate is key for stability
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
-
-    model.train()
-    print("Training model on sample data...")
-    for epoch in range(100):
-        total_loss = 0
-        for text, target in train_data:
-            optimizer.zero_grad()
-            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-            prediction = model(inputs['input_ids'], inputs['attention_mask'])
-            loss = criterion(prediction, torch.tensor([[target]], dtype=torch.float))
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-        if (epoch + 1) % 20 == 0:
-            print(f"Epoch {epoch+1}/100 - Loss: {total_loss:.4f}")
-
-    model.eval()
-    reviews = ["Sucked", "Classic", "So good", "Didn't suck", "A total disaster"]
-
-    print(f"\n{'Review':<20} | {'Sentiment Score (-1 to 1)':<25}")
-    print("-" * 50)
-
+    # Calculate raw projection scores (Dot Product / Cosine Similarity to Axis)
+    raw_scores = []
     for text in reviews:
-        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-        with torch.no_grad():
-            score = model(inputs['input_ids'], inputs['attention_mask'])
-        print(f"{text:<20} | {score.item():.4f}")
+        review_emb = get_bert_cls_embedding(text, model, tokenizer)
+        # Projection: dot product measures how much the review aligns with the axis
+        score = torch.mm(review_emb, sentiment_axis.T).item()
+        raw_scores.append((text, score))
+
+    # --- NORMALIZATION ---
+    # Since raw BERT space is compressed, we scale the values to -1 to 1
+    # based on the observed range of these specific encodings.
+    scores_only = [s for _, s in raw_scores]
+    max_abs = max(abs(min(scores_only)), abs(max(scores_only)))
+
+    print(f"{'Review':<20} | {'Derived Sentiment Score (-1 to 1)':<25}")
+    print("-" * 60)
+
+    for text, score in raw_scores:
+        # Scale the score relative to the maximum observed intensity
+        final_score = score / max_abs
+        print(f"{text:<20} | {final_score:.4f}")
 
 if __name__ == "__main__":
-    run_example()
+    run_zero_shot_derivation()
