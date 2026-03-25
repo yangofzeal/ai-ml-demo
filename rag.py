@@ -5,6 +5,10 @@ On mac:
 $ brew install ollama
 $ ollama pull llama3.2
 
+Generated Response: Yes, if your golden retriever is well-behaved, you can bring it to work on Fridays, but make sure to keep it leashed at all times and ensure its vaccinations are up-to-date.
+
+Generated Response: You'll have 10 days off per year.
+
 """
 import chromadb
 from chromadb.utils import embedding_functions
@@ -17,14 +21,28 @@ def main():
     collection = client.create_collection(name="office_rules", embedding_function=emb_fn)
 
     # --- DOCUMENT CHUNKING & STORAGE ---
+
+    text = "BATHROOMS must be cleaned and tidy each morning."
+    collection.add(
+        documents=[text],
+        ids=["bathroom_policy_01"]
+    )
+
     text = "PET POLICY: Well-behaved dogs are allowed in the office on Fridays. They must be leashed at all times and have up-to-date vaccinations."
     collection.add(
         documents=[text],
         ids=["pet_policy_01"]
     )
 
+    text = "VACATION: 10 days of vacation will be provided each year.  Vacations must be planned in accordance with your manager."
+    collection.add(
+        documents=[text],
+        ids=["vacation_policy_01"]
+    )
+
     # --- QUERY PROCESSING ---
-    user_query = "Can I bring my golden retriever to work?"
+    ##user_query = "Can I bring my golden retriever to work?"
+    user_query = "How many days off do I have per year?"
 
     # --- VECTOR SEARCH ---
     results = collection.query(query_texts=[user_query], n_results=1)
